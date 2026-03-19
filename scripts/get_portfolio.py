@@ -1,6 +1,4 @@
 import argparse
-import os
-import subprocess
 import sys
 
 from config import get_api_secret, get_account_id, create_client
@@ -24,27 +22,51 @@ def get_portfolio(account_id=None):
         portfolio = client.get_portfolio()
 
         # Account Info
-        print("=" * 60)
-        print(f"PORTFOLIO - Account: {portfolio.account_id} ({portfolio.account_type.value})")
-        print("=" * 60)
+        print(f"## PORTFOLIO - Account: {portfolio.account_id} ({portfolio.account_type.value})")
 
-        # Buying Power
-        print("\n📊 BUYING POWER")
-        print("-" * 40)
+        # Portfolio Summary as markdown table
         bp = portfolio.buying_power
-        print(f"  Buying Power:         ${bp.buying_power:,.2f}")
-        print(f"  Cash Only:            ${bp.cash_only_buying_power:,.2f}")
-        print(f"  Options Buying Power: ${bp.options_buying_power:,.2f}")
+        total_equity = sum(e.value for e in portfolio.equity)
+
+        # Compute total cost basis and gain/loss from positions
+        total_cost_basis = 0
+        total_gain_loss = 0
+        total_day_change = 0
+        has_cost_basis = False
+        has_day_change = False
+
+        if portfolio.positions:
+            for pos in portfolio.positions:
+                if pos.cost_basis:
+                    has_cost_basis = True
+                    total_cost_basis += pos.cost_basis.total_cost
+                    total_gain_loss += pos.cost_basis.gain_value
+                if pos.position_daily_gain:
+                    has_day_change = True
+                    total_day_change += pos.position_daily_gain.gain_value
+
+        print()
+        print("| Metric | Value |")
+        print("| --- | --- |")
+        print(f"| Total Equity | ${total_equity:,.2f} |")
+        if has_cost_basis:
+            print(f"| Total Cost Basis | ${total_cost_basis:,.2f} |")
+            gain_sign = "+" if total_gain_loss >= 0 else ""
+            print(f"| Reported Gain/Loss | {gain_sign}${total_gain_loss:,.2f} |")
+        if has_day_change:
+            day_sign = "+" if total_day_change >= 0 else ""
+            print(f"| Today's Change | {day_sign}${total_day_change:,.2f} |")
+        print(f"| Buying Power | ${bp.buying_power:,.2f} |")
 
         # Equity Breakdown
-        print("\n💰 EQUITY BREAKDOWN")
-        print("-" * 40)
-        total_equity = sum(e.value for e in portfolio.equity)
-        print(f"  Total Equity: ${total_equity:,.2f}")
         print()
+        print("### Equity Breakdown")
+        print()
+        print("| Asset Type | Value | % of Portfolio |")
+        print("| --- | --- | --- |")
         for eq in portfolio.equity:
             asset_type = eq.type.value.replace("_", " ").title()
-            print(f"  {asset_type:20} ${eq.value:>12,.2f}  ({eq.percentage_of_portfolio:>6.2f}%)")
+            print(f"| {asset_type} | ${eq.value:,.2f} | {eq.percentage_of_portfolio:.2f}% |")
 
         # Group positions by type
         if portfolio.positions:
@@ -52,45 +74,41 @@ def get_portfolio(account_id=None):
             options = [p for p in portfolio.positions if p.instrument.type.value == "OPTION"]
             crypto = [p for p in portfolio.positions if p.instrument.type.value == "CRYPTO"]
 
-            def print_position(pos):
-                inst = pos.instrument
-                print(f"\n  {inst.name} ({inst.symbol})")
-                print(f"    Quantity: {pos.quantity}")
-                print(f"    Current Value: ${pos.current_value:,.2f} ({pos.percent_of_portfolio:.2f}% of portfolio)")
-                print(f"    Last Price: ${pos.last_price.last_price:,.2f}")
+            def print_positions_table(positions, title):
+                print()
+                print(f"### {title}")
+                print()
+                print("| Ticker | Name | Value | Portfolio Weight | Day Change % | Gain/Loss |")
+                print("| --- | --- | --- | --- | --- | --- |")
+                for pos in positions:
+                    inst = pos.instrument
+                    value = f"${pos.current_value:,.2f}"
+                    weight = f"{pos.percent_of_portfolio:.1f}%"
 
-                # Position daily gain
-                if pos.position_daily_gain:
-                    dg = pos.position_daily_gain
-                    gain_sign = "+" if dg.gain_value >= 0 else ""
-                    print(f"    Today's Gain: {gain_sign}${dg.gain_value:,.2f} ({gain_sign}{dg.gain_percentage:.2f}%)")
+                    if pos.position_daily_gain:
+                        dg = pos.position_daily_gain
+                        day_sign = "+" if dg.gain_percentage >= 0 else ""
+                        day_change = f"{day_sign}{dg.gain_percentage:.2f}%"
+                    else:
+                        day_change = "\u2014"
 
-                # Cost basis and total gain
-                if pos.cost_basis:
-                    cb = pos.cost_basis
-                    total_gain_sign = "+" if cb.gain_value >= 0 else ""
-                    print(f"    Cost Basis: ${cb.total_cost:,.2f} (${cb.unit_cost:,.2f}/unit)")
-                    print(f"    Total Gain: {total_gain_sign}${cb.gain_value:,.2f} ({total_gain_sign}{cb.gain_percentage:.2f}%)")
+                    if pos.cost_basis:
+                        cb = pos.cost_basis
+                        gain_sign = "+" if cb.gain_percentage >= 0 else ""
+                        gain_loss = f"{gain_sign}{cb.gain_percentage:,.0f}%"
+                    else:
+                        gain_loss = "\u2014"
+
+                    print(f"| {inst.symbol} | {inst.name} | {value} | {weight} | {day_change} | {gain_loss} |")
 
             if equities:
-                print("\n📈 EQUITIES")
-                print("-" * 60)
-                for pos in equities:
-                    print_position(pos)
+                print_positions_table(equities, "Holdings by Weight")
 
             if options:
-                print("\n📜 OPTIONS")
-                print("-" * 60)
-                for pos in options:
-                    print_position(pos)
+                print_positions_table(options, "Options Positions")
 
             if crypto:
-                print("\n🪙 CRYPTO")
-                print("-" * 60)
-                for pos in crypto:
-                    print_position(pos)
-
-        print("\n" + "=" * 60)
+                print_positions_table(crypto, "Crypto Positions")
 
         client.close()
     except Exception as e:
